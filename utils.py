@@ -138,64 +138,88 @@ def log_to_sheets(entry: dict, sheet_id: str = None, sheet_name: str = "Sheet1",
     return True
 
 
-def generate_multipage_proof_pdf(photos: list, statement: str) -> bytes:
+def generate_multipage_proof_pdf(photos: list, statement: str, photo_comments: dict = None) -> bytes:
     """Generate a multi-page PDF containing a statement and a page per photo.
 
     photos: list of dicts with keys 'bytes' and 'filename'
     statement: user statement text
     Returns PDF bytes.
     """
-    from reportlab.pdfgen import canvas
+    # Use ReportLab platypus to support anchors and internal links
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
     from reportlab.lib.pagesizes import letter
-    from reportlab.lib.utils import ImageReader
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus.flowables import AnchorFlowable
+
+    photo_comments = photo_comments or {}
 
     pdf_buffer = io.BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=letter)
-    page_width, page_height = letter
-    margin = 50
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=letter,
+                            rightMargin=50, leftMargin=50, topMargin=50, bottomMargin=50)
+    styles = getSampleStyleSheet()
+    normal = styles['Normal']
+    h1 = ParagraphStyle('h1', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=16)
+    link_style = ParagraphStyle('link', parent=normal, textColor='blue', underline=True)
 
-    # First page: statement
-    y = page_height - margin
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(margin, y, "SnapProof – Statement")
-    c.setFont("Helvetica", 11)
-    y -= 30
-    # Wrap statement text
-    text_obj = c.beginText(margin, y)
-    text_obj.setFont("Helvetica", 11)
+    story = []
+
+    # Build statement page: replace "Photo N" or "Picture N" with internal links
+    import re
+
+    def replace_photo_refs(text: str) -> str:
+        # replace occurrences like Photo 1 or Picture 2 with an internal link to #photo_1
+        def _repl(m):
+            kind = m.group(1)
+            num = m.group(2)
+            anchor = f"photo_{num}"
+            return f'<a href="#{anchor}">{kind} {num}</a>'
+        return re.sub(r"\b(Photo|Picture)\s+(\d+)\b", _repl, text, flags=re.IGNORECASE)
+
+    story.append(Paragraph("SnapProof – Statement", h1))
+    story.append(Spacer(1, 12))
+    # Convert statement to paragraphs, applying replacements
     for line in statement.splitlines():
-        text_obj.textLine(line)
-    c.drawText(text_obj)
-    c.showPage()
+        linked = replace_photo_refs(line)
+        story.append(Paragraph(linked, normal))
+        story.append(Spacer(1, 6))
 
-    # One page per photo, include label and timestamp
+    story.append(PageBreak())
+
+    # One page per photo with anchor and optional comment
     for idx, p in enumerate(photos):
+        # anchor name
+        anchor_name = f"photo_{idx+1}"
+        story.append(AnchorFlowable(anchor_name))
+        # label
+        label = f"Photo {idx+1}: {p.get('filename','')}"
+        timestamp = p.get('timestamp', '')
+        if timestamp:
+            label = f"{label} — {timestamp}"
+        story.append(Paragraph(label, styles['Heading3']))
+        story.append(Spacer(1, 6))
+
         try:
-            img = Image.open(io.BytesIO(p["bytes"])).convert("RGB")
-            img_w, img_h = img.size
-            max_w = page_width - 2 * margin
-            max_h = page_height - 2 * margin - 40  # leave space for label
-            scale = min(max_w / img_w, max_h / img_h, 1.0)
-            draw_w = img_w * scale
-            draw_h = img_h * scale
-            img_reader = ImageReader(img)
-
-            # Draw label at the top
-            c.setFont("Helvetica-Bold", 12)
-            label = f"Photo {idx+1}: {p.get('filename','')}"
-            timestamp = p.get('timestamp', '')
-            if timestamp:
-                label = f"{label} — {timestamp}"
-            c.drawString(margin, page_height - margin + 5, label)
-
-            x = (page_width - draw_w) / 2
-            y = (page_height - draw_h) / 2 - 10
-            c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
-            c.showPage()
+            img_buf = io.BytesIO(p['bytes'])
+            rl_img = RLImage(img_buf)
+            # scale image to fit width
+            max_w = letter[0] - doc.leftMargin - doc.rightMargin
+            if rl_img.drawWidth > max_w:
+                rl_img.drawHeight = rl_img.drawHeight * (max_w / rl_img.drawWidth)
+                rl_img.drawWidth = max_w
+            story.append(rl_img)
+            story.append(Spacer(1, 6))
         except Exception:
-            # skip problematic images
-            continue
+            story.append(Paragraph("(Could not embed image)", normal))
 
-    c.save()
+        # photo comment
+        comment = photo_comments.get(str(idx)) or photo_comments.get(idx) or ''
+        if comment:
+            story.append(Paragraph(f"<b>Comment:</b> {comment}", normal))
+            story.append(Spacer(1, 6))
+
+        story.append(PageBreak())
+
+    doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
