@@ -1,0 +1,6 @@
+# Ignore credentials and virtual environment
+credentials.json
+venv/
+__pycache__/
+*.pyc
+.env

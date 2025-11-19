@@ -1,0 +1,7 @@
+streamlit
+reportlab
+pillow
+pandas
+gspread
+oauth2client
+python-dotenv
