@@ -31,6 +31,7 @@ jobs:
           python -V
           python test_multi_pdf.py
           python smoke_test.py
+          python test_pdf_anchors.py
 
       - name: Upload generated PDFs as workflow artifacts
         uses: actions/upload-artifact@v4
